@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Oct 22 20:07:52 2023
+
+@author: looby9000
+"""
+
+
+# ==============================================================================
+# Método de Macormack para ec. de advección
+
+# Este programa resuelve la ecuacion lineal de advección empleando el metodo de
+# Macormack,
+#
+# El problema a resolver consiste en la condicion inicial:
+#  u = forma gaussiana con sigma=0.05, centrada en 0.2
+# Las condiciones de frontera son:
+#   izquierda: inflow con valor u = 1,
+#   derecha: salida libre
+# Se utiliza 1 celda fantasma en cada extremo del arreglo de datos.
+# ==============================================================================
+
+import time
+#import numpy as np
+
+# ==============================================================================
+
+# CONSTANTES Y VARIABLES GLOBALES
+
+# Parámetros constantes de la simulación
+NX = 500         # Tamaño de la malla
+XL = 0.0         # Coordenada física del extremo izquierdo
+XR = 1.0         # Coordenada física del extremo derecho
+TFIN = 1.0       # Tiempo final de integración
+CFL = 0.9        # Parametro de Courant
+
+# El parámetro ETA puede cambiarse en cada uno de los códigos sin necesidad de 
+# crear uno nuevo para ETA=0 o ETA=0.4, cuidando de cambiar en la función 
+# OUTPUT y en la plantilla para el nombre del archivo, por el directorio 
+# correspondiente para cada una de las soluciones.
+ETA = 0.4
+DTOUT = 0.05     # Intervalo de tiempo para escribir a disco
+
+# Para tubo de choque: coord de la separación entre estados iniciales
+X0 = 0.2
+
+# Para ecuación de advección: velocidad de ondas ('a' en las notas)
+A = 1.0
+
+# Constantes derivadas de las anteriores
+DX = (XR-XL)/NX      # Espaciamiento de la malla
+
+# Variables globales (sus valors serán asignados en initflow)
+U  = [0]*(NX+2)    # Variables conservadas actuales
+# Alternativa: U = np.zeros(NX+2)
+# La diferencia: La primera es una lista, la segunda es un arrgelo de numpy
+# que soportan operaciones matemáticas.
+UP = [0]*(NX+2)    # Variables conservadas "avanzadas"
+UT = [0]*(NX+2) # Variable extra de conservadas temporales para Macormack.
+F  = [0]*(NX+2)    # Flujos físicos
+dt = 0             # Paso de tiempo
+t = 0              # Tiempo actual
+it = 0             # Iteración actual
+start_time = 0     # Tiempo de inicio
+next_tout = 0       # Tiempo para el siguiente output
+nout = 0           # Número de salida
+
+# ==============================================================================
+
+# Impone las condiciones iniciales
+def initflow(U):
+
+  global t, it, next_tout, nout
+
+  # Inicializar los valores de U en todo el dominio
+  # Nótese que también llenamos las celdas fantasma
+  
+  s = 0.05 # Desviación estándar
+  c = 0.2 # Centro de la gaussiana
+  
+  for i in range(0, NX+2):
+
+   U[i]= 1+np.exp(-((i*DX-c)**2)/(2*s**2))
+
+  # Inicializar otras variables
+  t = 0
+  it = 0
+  nout = 0
+  next_tout = 0
+
+# ==============================================================================
+
+# Escribe a disco el estado de la simulación
+def output(U):
+
+  global nout, next_tout
+  
+  # Generar el nombre del archivo de salida
+  #fname = "mac_3/Lax_{:02d}.txt".format(nout)
+    # Para ETA=0.4
+  fname = "mac_3_eta04/Lax_{:02d}.txt".format(nout)
+
+  # Abrir el archivo para escritura
+  fout = open(fname, "w")
+
+  # Escribir los valores de U al archivo (sólo celdas físicas)
+  for i in range(1, NX+1):
+    x = XL + i*DX
+    fout.write("{} {}\n".format(x, U[i]))
+
+  # Cerrar archivo
+  fout.close()
+
+  print("Se escribió salida", nout)
+
+  # Avanzar variables de output
+  nout = nout + 1
+  next_tout = DTOUT * nout
+
+# ==============================================================================
+
+
+# Aplicar condiciones de frontera a celdas fantasma
+# El arreglo pasado es al que aplicaremos las BCs
+def boundary(U):
+
+  # Asignamos los valores de U[0] y U[NX+1], según las BCs deseadas
+
+  U[0] = 1
+  U[NX+1] = U[NX]
+  
+  pass
+
+# ==============================================================================
+
+# Calcular los flujos físicos F
+def fluxes(U, F):
+  for i in range(0, NX+2):
+     F[i]=A*U[i]
+        
+  pass
+
+# ==============================================================================
+
+def Macormack(UT, U, F, UP):
+    
+    for i in range(1,NX+1):
+        
+        UT[i] = U[i]- (dt/DX)*(F[i+1]-F[i])
+         
+    boundary(UT)
+    fluxes(UT, F)
+    
+    for i in range(1, NX+1):
+        
+        UP[i] = (U[i]+UT[i])/2-(dt/(2*DX))*(F[i]-F[i-1])
+    
+    pass
+
+# ==============================================================================
+
+# Calcula el paso de tiempo resultante de la condición CFL
+def timestep(U):
+
+  # Para la ec. de advección, max_u es simplemente A
+  max_speed = abs(A)
+
+  # Para otros casos, debemos calcular el valor máximo de |velocidad|
+  # max_speed = 0
+  # for i in range(1, NX+1):
+  #   if abs(U[i]) > max_speed:
+  #     max_speed = abs(U[i])
+  
+  dt = CFL * DX / max_speed
+
+  return dt
+
+# ==============================================================================
+
+# Aplica el método de Lax para obtener las UP a partir de las U
+# Supone que los flujos F ya fueron actualizados
+def Lax(U, F, UP):
+
+  for i in range(1, NX+1):
+      
+      UP[i] = (U[i+1]+U[i-1])/2-(dt/(2*DX))*(F[i+1]-F[i-1])
+  
+  pass
+
+# ==============================================================================
+
+# Hace un paso de tiempo, volcando las UPs sobre las Us y avanzando variables
+def step(U, UP):
+
+  global t, it
+
+  for i in range(0, NX+2):
+    U[i] = UP[i]
+
+  t = t + dt
+  it = it + 1
+  
+# ==============================================================================
+
+# Hace un paso de tiempo, volcando las UPs sobre las Us y avanzando variables
+def step_viscoso(U, UP):
+
+  global t, it
+  
+  U[0] = UP[0]
+  U[NX+1] = UP[NX+1]
+  
+  for i in range(0, NX+1):
+      if (UP[i+1]-UP[i])*(UP[i]-UP[i-1])<0:
+          U[i] = UP[i] + ETA*(UP[i+1]+UP[i-1]-2*UP[i])
+      else:
+          U[i]=UP[i]
+
+  t = t + dt
+  it = it + 1
+
+# ==============================================================================
+
+# PROGRAMA PRINCIPAL
+
+# Condición inicial e inicializaciones
+initflow(U)
+
+# Escribir condición inicial a disco
+output(U)
+
+# Tiempo de inicio de la simulación
+start_time = time.time()
+
+# Bucle temporal
+while (t <= TFIN):
+
+  # Actualizar el paso de tiempo
+  dt = timestep(U)
+
+  # Actualizar flujos físicos
+  fluxes(U, F)
+
+  # Aplicar método de Lax para actualizar las UP
+  Macormack(UT, U, F, UP)
+
+  # Aplicar condiciones de frontera a las UP
+  boundary(UP)
+
+  # Avanzar en el tiempo
+  step_viscoso(U, UP)
+
+  # Escribir a disco
+  if (t >= next_tout):
+    output(U)
+
+# Terminar
+elapsed = time.time() - start_time
+print("\nSe calcularon {} iteraciones {:.1f} s\n".format(it, elapsed))
+
+# ==============================================================================
+
+# Grafica varias salidas de un codigo que resuelve una sola ecuación de
+# conservación, como la ec. de advección o la de Burgers, de una por una,
+# usando el modo "interactivo" de matplotlib.
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# ------------------------------------------------------------------------------
+
+# Especificar los números mínimo y máximo de salida a graficar
+# Supone que los archivos de datos se llaman "Lax_xx.txt", donde
+# xx es el número de salida (con ceros de relleno a la izquierda)
+min_out = 0
+max_out = 100
+
+# Plantilla para los nombrs de archivo
+#fname_base = fname = "mac_3/Lax_{:02d}.txt"
+#Para ETA=0.4
+fname_base = fname = "mac_3_eta04/Lax_{:02d}.txt"
+
+# ------------------------------------------------------------------------------
+
+# Crea una figura nueva -- esto lo hacemos una sola vez
+plt.figure(figsize=(8,6))
+
+# Activar modo "interactivo" (que nos permite alterar una figura)
+plt.ion()
+
+for nout in range(min_out, max_out+1):
+
+  # Generar nombre de archivo de datos
+  fname = fname_base.format(nout)
+
+  # Cargamos con numpy los datos, separamos las columnas
+  A = np.loadtxt(fname)
+  x = A[:, 0]
+  var = A[:, 1]
+
+  # Comentar esta instrucción se quieren graficar todas las salidas
+  # encimadas en el mismo plot
+  plt.clf()
+
+  # Grafica var vs. x usando el línea continua y puntos pequeños
+  # en los valores, en color azul
+  plt.plot(x, var, ls="-", marker=".", color="blue")
+
+  # Título y etiquetas de los ejes
+  plt.title(fname)
+  plt.xlabel("Posición x")
+  plt.ylabel("Variable dependiente u")
+
+  # Límites horizontales de la gráfica
+  plt.xlim(0, 1)
+
+  # Fijamos los límites verticales a los de la condición inicial
+  if nout == min_out:
+    ylims = plt.ylim()
+  else:
+   plt.ylim(ylims)
+  #plt.ylim(1, 2.25)
+
+  # Ajusta los márgenes
+  plt.tight_layout()
+
+  # Opcional: guardar la figura a disco:
+  plt.savefig(fname.replace(".txt", ".png"))
+
+  # Agregar una pausa
+  plt.pause(0.1)
